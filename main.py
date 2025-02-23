@@ -61,15 +61,61 @@ class Pos:
 
     def __repr__(self) -> str: return ", ".join(map(str, self.getCoords()))
 
+    def copy(self) -> Self: return Pos(self.file, self.rank)
+
 class Piece:
-    REPR = ""
-    def __init__(self, pos:Pos, *, isBlack):
+    REPR  = ""
+    MOVES = []
+
+    def __init__(self, pos:Pos, *, isBlack) -> None:
         self.pos, self.isBlack = pos, isBlack
+        self.isFirstMove = True
     
+    def move(self, newPos:Pos) -> None:
+        if self._isLegalMove(newPos): self._changePiecePos(newPos)
+
+    def _isLegalMove(self, newPos:Pos) -> bool:
+        newFile, newRank = newPos.getCoords()
+        file, rank = self.pos.getCoords()
+        return (newFile - file, newRank - rank) in self.MOVES
+
+    def _changePiecePos(self, newPos:Pos) -> None:
+        self.pos = newPos
+        if self.isFirstMove: self.isFirstMove = False
+
     def __repr__(self) -> str: return self.REPR[self.isBlack]
 
 class King(Piece):
-    REPR = "♚♔"
+    REPR  = "♚♔"
+    MOVES = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    FREE_FILES_SHORT = (ChessFile.f, ChessFile.g)
+    FREE_FILES_LONG  = (ChessFile.b, ChessFile.c, ChessFile.d)
+
+    def _isLegalMove(self, newPos):
+        if super()._isLegalMove(newPos): return True
+        if not self.isFirstMove or newPos.rank != self.pos.rank: return False
+        # alternative black magic: newPos.rank != 1 + 7 * self.isBlack
+
+        # if newPos.file == ChessFile.g: ...
+        # elif newPos.file == ChessFile.c: ...
+        # else: return False
+        # ^^^ equivalent to vvv
+        isShortCastle = False
+        match newPos.file:
+            case ChessFile.g: isShortCastle = True
+            case ChessFile.c: isShortCastle = False
+            case _: return False
+        
+        rook :Piece = PIECES[isShortCastle * 3 + 16 * self.isBlack]
+        if not rook.isFirstMove: return False
+
+        filesToCheck = King.FREE_FILES_SHORT if isShortCastle else King.FREE_FILES_LONG
+        for piece in PIECES:
+            if piece is self or piece is rook or isinstance(piece, Pawn) and piece.isBlack == self.isBlack: continue
+            if piece.pos.rank == self.pos.rank and piece.pos.file in filesToCheck: return False
+        
+        rook._changePiecePos(Pos(ChessFile(newPos.file.value - 2 * isShortCastle + 1), newPos.rank))
+        return True
 
 class Bishop(Piece):
     REPR = "♝♗"
@@ -78,10 +124,12 @@ class Rook(Piece):
     REPR = "♜♖"
 
 class Pawn(Piece):
-    REPR = "♟♙"
+    REPR  = "♟♙"
+    MOVES = []
 
 class Knight(Piece):
-    REPR = "♞♘"
+    REPR  = "♞♘"
+    MOVES = []
 
 class Queen(Piece):
     REPR = "♛♕"
@@ -107,7 +155,7 @@ def buildChessboard(pieces:list[Piece]) -> str:
     return chessboard
 
 turn   = 0
-PIECES = []
+PIECES :list[Piece] = []
 def setupPieces() -> None:
     global PIECES
     PIECES = []
@@ -137,6 +185,8 @@ def main() -> None:
         move = input(f"Turn: {turn}\nInsert your next move as {"black" if turn % 2 else "white"}: ")
         if move == GameCommand.quit.name: return
         
+        PIECES[23].move(Pos.createFromRaw(move))
+
         turn += 1
 
 if __name__ == '__main__':
