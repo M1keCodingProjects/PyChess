@@ -5,7 +5,7 @@ LABEL_SPACING       = ' ' * LABEL_SPACING_AMT
 AFTER_LABEL_SPACING = ' ' * (LABEL_SPACING_AMT - 1)
 
 from enum import Enum, StrEnum
-from typing import Self
+from typing import Optional, Self
 class Corner(StrEnum):
     Top    = "┌┬┐"
     Middle = "├┼┤"
@@ -72,7 +72,14 @@ class Pos:
 
         return Pos(ChessFile.createFromRaw(pos[0]), rank)
 
-    def isEqualTo(self, file:int, rank:int) -> bool: return self.getCoords() == (file, rank)
+    def __eq__(self, other:Self) -> bool: return self.isEqualTo(other.getCoords())
+
+    def isEqualTo(self, file:int, rank:int) -> bool:
+        """
+        Efficient comparison method for dynamic coordinates,
+        avoiding having to create a new instance of Pos.
+        """
+        return self.getCoords() == (file, rank)
 
     def getCoords(self) -> tuple[int, int]: return self.file.value, self.rank
 
@@ -146,9 +153,78 @@ class King(Piece):
 class Bishop(Piece):
     REPR = "♝♗"
 
+    def _isLegalMove(self, newPos:Pos) -> bool:
+        if super()._isLegalMove(newPos): return True
+
+        if abs(newPos.rank - self.pos.rank) != abs(newPos.file.value - self.pos.file.value): return False
+        
+        dist = newPos.file.value - self.pos.file.value #TODO: repetition is always bad.
+        if not dist: return False # Cannot remain still
+
+        isLeft = dist < 0
+        dist = abs(dist)
+
+        for piece in PIECES:
+            if abs(piece.pos.rank - self.pos.rank) != abs(piece.pos.file.value - self.pos.file.value) or piece is self: continue
+            
+            # Checking if this piece is an obstacle along our path:
+            distToPiece = piece.pos.file.value - self.pos.file.value
+            isPieceLeft = distToPiece < 0
+            distToPiece = abs(distToPiece)
+
+            if isLeft == isPieceLeft and distToPiece < dist: return False
+    
+        return True
+
 class Rook(Piece):
     REPR = "♜♖"
 
+    def _isLegalMove(self, newPos:Pos) -> bool:
+        if super()._isLegalMove(newPos): return True
+
+        # Horizontal movement: only column changes
+        if newPos.rank == self.pos.rank:
+            dist = newPos.file.value - self.pos.file.value
+            if not dist: return False # Cannot remain still
+
+            isLeft = dist < 0
+            dist = abs(dist)
+
+            for piece in PIECES:
+                if piece.pos.rank != self.pos.rank or piece is self: continue
+                
+                # Checking if this piece is an obstacle along our path:
+                distToPiece = piece.pos.file.value - self.pos.file.value
+                isPieceLeft = distToPiece < 0
+                distToPiece = abs(distToPiece)
+
+                if isLeft == isPieceLeft and distToPiece < dist: return False
+        
+            return True
+        
+        # Vertical movement: only row changes
+        if newPos.file == self.pos.file:
+            dist = newPos.rank - self.pos.rank
+            if not dist: return False # Cannot remain still
+
+            isDown = dist < 0
+            dist = abs(dist)
+
+            for piece in PIECES:
+                if piece.pos.file != self.pos.file or piece is self: continue
+
+                # Checking if this piece is an obstacle along our path:
+                distToPiece = piece.pos.rank - self.pos.rank
+                isPieceDown = distToPiece < 0
+                distToPiece = abs(distToPiece)
+
+                if isDown == isPieceDown and distToPiece < dist: return False
+
+            return True
+
+        return False
+
+EN_PASSANTABLE :Optional["Pawn"] = None
 class Pawn(Piece):
     REPR  = "♟♙"
     MOVES = [(0, 1)]
@@ -156,30 +232,37 @@ class Pawn(Piece):
     def __init__(self, pos:Pos, *, isBlack:bool) -> None:
         super().__init__(pos, isBlack = isBlack)
         if self.isBlack: self.MOVES   = [(0, -1)]
-        self.canOpponentEnPassant     = False
         self.canPromote               = False
 
     def isValidForwardMove(self, newPos:Pos, nSquares = 1) -> bool:
         return newPos.rank - self.pos.rank == ((1 - 2 * self.isBlack) * nSquares)
 
     def _isLegalMove(self, newPos:Pos) -> bool:
+        global EN_PASSANTABLE
         if super()._isLegalMove(newPos): return True
 
         # Diagonal motion: the file changes
         if newPos.file != self.pos.file:
+            # Horizontal movement cannot be different from 1 square, as well as the vertical one:
             if abs(newPos.file.value - self.pos.file.value) != 1 or not self.isValidForwardMove(newPos): return False
-
+            
             for piece in PIECES:
+                # We only care about capturability conditions so we only look at capturable pieces:
                 if self.isBlack == piece.isBlack: continue
+                # This responsability might be misplaced.
 
-                if piece.pos.isEqualTo(newPos.file.value, newPos.rank): return True
-                if isinstance(piece, Pawn) and piece.canOpponentEnPassant and piece.pos.rank == self.pos.rank: return True
+                # Piece capture:
+                if piece.pos == newPos: return True
+
+                # En-passant: the opponent pawn must be on the same file I want to move into:
+                if isinstance(piece, Pawn) and piece is EN_PASSANTABLE and piece.pos.isEqualTo(
+                    newPos.file.value, self.pos.rank): return True
 
             return False
 
         # First move can be 2 squares forward:
-        if self.isValidForwardMove(newPos, 2) and self.isFirstMove:
-            self.canOpponentEnPassant = True
+        if self.isFirstMove and self.isValidForwardMove(newPos, 2):
+            EN_PASSANTABLE = self
             return True
 
     def _changePiecePos(self, newPos:Pos) -> None:
@@ -251,14 +334,16 @@ def promotePawn(pawn:Pawn) -> None:
         
         break
 
+    pawn.canPromote = False # Non serve ma aiuta
     PIECES.remove(pawn)
 
 def main() -> None:
-    global turn
+    global turn, EN_PASSANTABLE
     setupPieces()
 
-    pieceIRandomlyDecidedShouldMove = PIECES[9]
-    print(pieceIRandomlyDecidedShouldMove.pos)
+    pieceIRandomlyDecidedShouldMove = PIECES[2]
+    print(pieceIRandomlyDecidedShouldMove)
+    pieceIRandomlyDecidedShouldMove.pos.rank = 4
     while True:
         print('\n' * 5 * (turn > 0) + buildChessboard(PIECES))
         move = input(f"Turn: {turn}\nInsert your next move as {"black" if turn % 2 else "white"}: ")
@@ -274,8 +359,14 @@ def main() -> None:
         except ChessFile.InvalidChessFileErr as err: print(err)
         except Pos.RankOOBErr as err: print(err)
         
-        if not pieceHasMoved: print("Invalid move. Try again.")
-        elif isinstance(pieceIRandomlyDecidedShouldMove, Pawn) and pieceIRandomlyDecidedShouldMove.canPromote:
+        if not pieceHasMoved:
+            print("Invalid move. Try again.")
+            continue
+
+        # If an en-passant-able pawn does exist and the opponent moved that pawn can no longer be en-passant-ed
+        if EN_PASSANTABLE and pieceIRandomlyDecidedShouldMove is not EN_PASSANTABLE: EN_PASSANTABLE = None
+
+        if isinstance(pieceIRandomlyDecidedShouldMove, Pawn) and pieceIRandomlyDecidedShouldMove.canPromote:
             promotePawn(pieceIRandomlyDecidedShouldMove)
             pieceIRandomlyDecidedShouldMove = PIECES[-1]
 
